@@ -41,3 +41,25 @@ jobs:
             ghcr.io/${{ github.repository }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Der Server holt das Deployment selbst ab (Pull, kein Runner mit Zugang zum Host):
+  # ~/server/deploy-agent setzt payload.tag als Image-Tag und meldet success/failure zurück.
+  deploy:
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      deployments: write
+    steps:
+      - name: Deployment anlegen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          id=$(gh api "repos/${{ github.repository }}/deployments" --jq .id --input - <<JSON
+          {"ref": "${{ github.sha }}", "environment": "production", "auto_merge": false,
+           "required_contexts": [], "payload": {"tag": "${{ github.sha }}"},
+           "description": "Image ghcr.io/${{ github.repository }}:${{ github.sha }}"}
+          JSON
+          )
+          gh api "repos/${{ github.repository }}/deployments/$id/statuses" -f state=queued \
+            -f description="wartet auf den deploy-agent des Servers" > /dev/null
+          echo "Deployment $id angelegt"
