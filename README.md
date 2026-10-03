@@ -1,8 +1,8 @@
 # Vault MCP
 
-Remote-MCP-Server, der Claude (claude.ai, Claude Desktop, Claude Code) lesenden
-Zugriff auf einen Obsidian-Vault gibt, plus eine eng begrenzte Schreibfunktion
-für einen Posteingang. Reiner OAuth-Resource-Server: [Pocket ID](https://pocket-id.org)
+Remote-MCP-Server, der Claude (claude.ai, Claude Desktop, Claude Code) Zugriff
+auf einen Obsidian-Vault gibt: lesen, neue Notizen im Posteingang anlegen und
+bestehende Notizen gezielt bearbeiten. Reiner OAuth-Resource-Server: [Pocket ID](https://pocket-id.org)
 ist der Authorization Server, Claude weist sich per CIMD aus.
 
 ## Was er kann
@@ -15,6 +15,9 @@ ist der Authorization Server, Claude weist sich per CIMD aus.
 | `vault_links` | Backlinks und ausgehende Links einer Notiz |
 | `vault_stats` | Kennzahlen des Vaults |
 | `vault_capture` | Neue Notiz im Capture-Ordner ablegen (Scope `vault:capture`) |
+| `vault_edit` | Exakte Textstelle in einer Notiz ersetzen oder löschen (Scope `vault:edit`) |
+| `vault_append` | Text am Notizende oder unter einer Überschrift anhängen (Scope `vault:edit`) |
+| `vault_set_frontmatter` | Einzelne Frontmatter-Felder setzen oder entfernen (Scope `vault:edit`) |
 
 ## Betrieb
 
@@ -25,7 +28,9 @@ Das Image baut GitHub Actions bei jedem Push auf `main`:
    den Stack kopieren (ohne `.example`) und anpassen.
 2. In Pocket ID unter *Allowed metadata document URLs*
    `https://claude.ai/oauth/mcp-oauth-client-metadata` freischalten und eine API
-   mit der Resource `<PUBLIC_URL>/mcp` anlegen.
+   mit der Resource `<PUBLIC_URL>/mcp` anlegen. Der Scope `vault:edit` muss dort
+   genauso freigegeben sein wie `vault:capture`; ein bestehender Connector muss
+   danach in Claude neu verbunden werden, damit das Token ihn trägt.
 3. `docker compose up -d`, dann in Claude einen Connector auf `<PUBLIC_URL>/mcp`.
 
 | Variable | Bedeutung |
@@ -45,15 +50,24 @@ npm ci && npm test
 ## Aufbau
 
 - `src/oauth/` — Token-Prüfung (RFC 9068, Audience-Bindung), Principal-Cache
-- `src/vault/` — Markdown-Parser, SQLite-FTS5-Index, Link-Graph, Policy, Capture
+- `src/vault/` — Markdown-Parser, SQLite-FTS5-Index, Link-Graph, Policy, Capture, Bearbeiten
 - `src/mcp/` — MCP-Werkzeuge auf Basis von `@modelcontextprotocol/server` v2
 - `src/http/` — HTTP-Schicht, Protected Resource Metadata, Host-Prüfung
 
 ## Sicherheitsentscheidungen
 
-- **Schreibrechte auf Dateisystemebene begrenzt:** Der Vault ist read-only gemountet,
-  nur der Capture-Ordner liegt beschreibbar darüber. Ein Fehler im Code kann
-  keine bestehende Notiz verändern.
+- **Bearbeiten nur lokal und nur mit eigenem Scope:** Es gibt kein „Datei komplett
+  überschreiben“ — nur Textstelle ersetzen (muss eindeutig sein), anhängen und
+  einzelne Frontmatter-Felder setzen. Bearbeitbar ist nur, was im Index steht:
+  ausgeschlossene Pfade, vertrauliche Ordner, Readwise-Importe und alles außer
+  `.md` bleiben gesperrt. Ändert Obsidian Sync die Datei zwischen Lesen und
+  Schreiben, wird abgebrochen statt überschrieben.
+- **Schreibgrenze wählbar über den Mount:** Zum Bearbeiten ist der Vault
+  beschreibbar gemountet; die frühere Garantie „ein Code-Fehler kann keine
+  bestehende Notiz verändern“ gilt damit nicht mehr. Wer sie zurück will, mountet
+  den Vault wieder `:ro` (siehe `docker-compose.example.yml`) — die
+  Bearbeitungswerkzeuge melden dann den Schreibschutz, Capture funktioniert weiter.
+  Als Netz bleibt die Versionshistorie von Obsidian Sync.
 - **Vertrauliche Ordner** werden indexiert, aber nur auf ausdrückliche Anforderung
   ausgeliefert. Welche das sind, steht in der Policy-Datei auf dem Server, nicht
   im Code.

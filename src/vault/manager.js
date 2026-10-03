@@ -22,7 +22,7 @@ export function createIndexManager({ vaultPath, dbPath, policy = DEFAULT_POLICY,
     const started = Date.now();
     const previous = current;
     const { db, count } = buildIndex({ vaultPath, dbPath, policy, logger: { info: () => {}, warn: logger.warn } });
-    current = openIndex(db, { vaultPath });
+    current = openIndex(db, { vaultPath, policy });
     builtAt = Date.now();
     if (previous && previous.db !== db) {
       try {
@@ -63,5 +63,6 @@ export function createIndexManager({ vaultPath, dbPath, policy = DEFAULT_POLICY,
     outgoingLinks: (...a) => current.outgoingLinks(...a),
     listFolder: (...a) => current.listFolder(...a),
     stats: (...a) => current.stats(...a),
+    refresh: (...a) => current.refresh(...a),
   };
 }

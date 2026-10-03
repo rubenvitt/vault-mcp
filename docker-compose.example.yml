@@ -20,11 +20,15 @@ services:
       - TRUST_PROXY=true
       - REINDEX_INTERVAL_MIN=15
     volumes:
-      # Vault grundsätzlich nur lesbar …
-      - /pfad/zum/vault:/vault:ro
-      # … einzig der Quick-Capture-Ordner ist beschreibbar. Das erzwingt die
-      # Schreibgrenze auf Dateisystemebene, nicht nur im Anwendungscode.
-      - /pfad/zum/vault/00-inbox/quick-capture:/vault/00-inbox/quick-capture:rw
+      # Beschreibbar, damit vault_edit, vault_append und vault_set_frontmatter
+      # bestehende Notizen ändern können. Der Container läuft als uid 1000 (node)
+      # und braucht Schreibrechte auf die Notizdateien.
+      - /pfad/zum/vault:/vault:rw
+      # Ohne Bearbeiten stattdessen: Vault read-only und nur den Quick-Capture-
+      # Ordner beschreibbar darüber — dann erzwingt das Dateisystem die
+      # Schreibgrenze, nicht nur der Anwendungscode.
+      #   - /pfad/zum/vault:/vault:ro
+      #   - /pfad/zum/vault/00-inbox/quick-capture:/vault/00-inbox/quick-capture:rw
       - ./policy.json:/config/policy.json:ro
       - ./data:/data
     networks:

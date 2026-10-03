@@ -8,7 +8,7 @@ Beispielnamen unten: `mcp.example.com` (dieser Server), `id.example.com` (Pocket
 | Frage | Entscheidung |
 |---|---|
 | Clients | nur claude.ai / Claude Desktop |
-| Rechte | Lesen + Capture (nur neue Dateien in `00-inbox/quick-capture/`) |
+| Rechte | Lesen, Capture (neue Dateien in `00-inbox/quick-capture/`), Bearbeiten bestehender Notizen — je eigener Scope |
 | Suche | SQLite FTS5, lokaler Index, kein externer Dienst |
 | Auth | **Reiner Resource Server**, Pocket ID ist der Authorization Server |
 | Client-Registrierung | **CIMD** (Client ID Metadata Documents), nicht DCR |
@@ -75,16 +75,49 @@ Optional zusätzlich: `ALLOWED_SUBJECTS` schränkt auf einzelne `sub`-Werte ein.
 
 ## Schreibrecht-Design
 
-Der Container mountet den Vault **read-only** und blendet nur
-`00-inbox/quick-capture/` schreibbar darüber. Capture kann damit ausschließlich
-neue Dateien in genau diesem Ordner anlegen — auf Dateisystemebene erzwungen,
-nicht nur im Code.
+Drei Stufen, jede mit eigenem Scope:
+
+| Scope | Darf |
+|---|---|
+| `vault:read` | suchen, lesen, auflisten |
+| `vault:capture` | neue Dateien in `00-inbox/quick-capture/` anlegen, nie überschreiben |
+| `vault:edit` | bestehende Notizen ändern: Textstelle ersetzen, anhängen, Frontmatter-Felder |
+
+### Bearbeiten
+
+Ursprünglich war der Vault read-only gemountet und nur der Capture-Ordner
+schreibbar — die Schreibgrenze lag im Dateisystem. Bearbeiten braucht einen
+schreibbaren Vault; die Grenze liegt damit im Code. Ausgeglichen wird das so:
+
+- **Nur lokale Operationen.** Kein „Datei komplett überschreiben“. `vault_edit`
+  verlangt eine eindeutige Textstelle (sonst Abbruch mit Anzahl der Treffer),
+  `vault_append` fügt nur ein, `vault_set_frontmatter` tauscht nur die genannten
+  Schlüsselblöcke. Ein Fehler kann so nicht den Rest einer Notiz mitreißen.
+- **Nur, was im Index steht.** Ziel muss eine indexierte `.md`-Datei sein. Damit
+  wirken `exclude` der Policy, Pfad-Traversal-Schutz und die Beschränkung auf
+  Markdown automatisch. Vertrauliche Ordner und Readwise sind zusätzlich gesperrt
+  — auch mit `allow_sensitive`. Ein nachträglich untergeschobener Symlink, der
+  aus dem Vault zeigt, wird per `realpath` abgewiesen.
+- **Keine verlorenen Sync-Änderungen.** Unmittelbar vor dem Schreiben wird die
+  Datei erneut gelesen; weicht sie ab, bricht die Operation ab.
+- **Index bleibt stimmig.** Nach dem Schreiben wird die eine Notiz neu indexiert
+  (Suche, Frontmatter, ausgehende Links); der periodische Komplettaufbau bleibt.
+- **Frontmatter ohne YAML-Bibliothek.** Unbekannte Felder und Formatierungen
+  bleiben zeilengenau erhalten. Werte, die YAML anders lesen würde (`true`,
+  `42`, `a: b`, `[[Link]]`), werden gequotet; deutsche Alias-Schlüssel
+  (`typ` ↔ `type`) werden erkannt statt dupliziert.
+
+Wer die Dateisystem-Grenze zurück will, mountet den Vault wieder `:ro` mit dem
+Capture-Ordner `:rw` darüber. Die Bearbeitungswerkzeuge melden dann den
+Schreibschutz; alles andere läuft unverändert.
 
 ## Limits, die die Tools einhalten
 
 - Tool-Ergebnis ≤ 150.000 Zeichen (Claude.ai/Desktop); wir kappen bei 120.000
 - Tool-Name ≤ 64 Zeichen
 - Jedes Tool trägt `title` und `readOnlyHint` bzw. `destructiveHint`
+  (die Bearbeitungswerkzeuge sind `destructiveHint: true`, damit Clients vor dem
+  Ausführen nachfragen können)
 - Große Treffermengen werden paginiert
 
 ## Vertrauliche Ordner und Ausschlüsse
@@ -96,9 +129,9 @@ schützenswerten Notizen liegen.
 
 - `exclude` — Regex auf den relativen Pfad; Treffer kommen nie in den Index.
 - `sensitive` — indexiert, aber nur mit `include_sensitive` / `allow_sensitive`
-  ausgeliefert, und `vault_list` zeigt sie nie.
+  ausgeliefert, `vault_list` zeigt sie nie, und bearbeitet werden sie nie.
 - `readwise` — importierte Fremdtexte als eigene Indexklasse, standardmäßig nicht
-  durchsucht; ihre `[[…]]` gelten nicht als Links.
+  durchsucht, nicht bearbeitbar; ihre `[[…]]` gelten nicht als Links.
 - `layoutHint` — erklärt Claude in `vault_list` die Ordnerstruktur.
 
 Ohne `POLICY_FILE` ist nichts vertraulich und nichts ausgeschlossen (außer
