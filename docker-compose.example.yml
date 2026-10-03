@@ -1,0 +1,39 @@
+name: vault-mcp
+
+networks:
+  proxy:
+    external: true
+
+services:
+  vault-mcp:
+    image: ghcr.io/rubenvitt/vault-mcp:latest
+    container_name: vault-mcp
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+      - TZ=Europe/Berlin
+      - VAULT_PATH=/vault
+      - INDEX_DB=/data/index.db
+      - POLICY_FILE=/config/policy.json
+      - PORT=3000
+      - TRUST_PROXY=true
+      - REINDEX_INTERVAL_MIN=15
+    volumes:
+      # Vault grundsätzlich nur lesbar …
+      - /pfad/zum/vault:/vault:ro
+      # … einzig der Quick-Capture-Ordner ist beschreibbar. Das erzwingt die
+      # Schreibgrenze auf Dateisystemebene, nicht nur im Anwendungscode.
+      - /pfad/zum/vault/00-inbox/quick-capture:/vault/00-inbox/quick-capture:rw
+      - ./policy.json:/config/policy.json:ro
+      - ./data:/data
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.vault-mcp.entrypoints=https"
+      - "traefik.http.routers.vault-mcp.rule=Host(`mcp.example.com`)"
+      - "traefik.http.routers.vault-mcp.tls.certresolver=letsencrypt"
+      # Bewusst OHNE gzip- und buffering-Middleware: beides bricht
+      # Streamable-HTTP/SSE-Antworten des MCP-Transports.
+      - "traefik.http.services.vault-mcp.loadbalancer.server.port=3000"
