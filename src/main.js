@@ -4,6 +4,7 @@ import { createPrincipalCache } from './oauth/principal-cache.js';
 import { createIndexManager } from './vault/manager.js';
 import { loadPolicy } from './vault/policy.js';
 import { createCapture } from './vault/capture.js';
+import { createEditor } from './vault/edit.js';
 import { createVaultMcpHandler } from './mcp/server.js';
 import { toWebRequest, writeWebResponse } from './http/bridge.js';
 
@@ -24,7 +25,7 @@ const config = {
   publicUrl: PUBLIC_URL,
   resource: `${PUBLIC_URL}/mcp`,
   issuer: ISSUER,
-  supportedScopes: ['vault:read', 'vault:capture'],
+  supportedScopes: ['vault:read', 'vault:capture', 'vault:edit'],
   allowedHosts: (process.env.ALLOWED_HOSTS ?? new URL(PUBLIC_URL).hostname).split(',').map((h) => h.trim()),
   trustProxy: process.env.TRUST_PROXY !== 'false',
 };
@@ -57,10 +58,12 @@ const index = createIndexManager({
 });
 const CAPTURE_FOLDER = process.env.CAPTURE_FOLDER ?? '00-inbox/quick-capture';
 const capture = createCapture({ vaultPath: VAULT_PATH, folder: CAPTURE_FOLDER });
+const editor = createEditor({ vaultPath: VAULT_PATH, index });
 
 const mcpHttp = createVaultMcpHandler({
   index,
   capture,
+  editor,
   captureFolder: CAPTURE_FOLDER,
   layoutHint: POLICY.layoutHint,
   // Synchron: die Prüfung ist in der HTTP-Schicht bereits gelaufen.

@@ -8,7 +8,7 @@
  * Parser für genau die Teilmenge, die im Vault tatsächlich vorkommt.
  */
 
-const KEY_ALIASES = {
+export const KEY_ALIASES = {
   typ: 'type',
   quelle: 'source',
   titel: 'title',

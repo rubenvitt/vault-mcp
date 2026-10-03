@@ -3,10 +3,10 @@ import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 /**
- * Schreibpfad in den Vault — bewusst der einzige.
+ * Anlegen neuer Notizen im Posteingang.
  *
  * Es werden ausschliesslich NEUE Dateien im Capture-Ordner angelegt.
- * Bestehende Notizen werden nie veraendert.
+ * Bestehende Notizen veraendert nur edit.js, mit eigenem Scope.
  */
 export function createCapture({ vaultPath, folder = '00-inbox/quick-capture', now = () => new Date() }) {
   const baseDir = resolve(vaultPath, folder);

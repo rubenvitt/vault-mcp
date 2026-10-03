@@ -59,20 +59,60 @@ function* walk(dir, root) {
   }
 }
 
+function prepareStatements(db) {
+  return {
+    insertNote: db.prepare(
+      `INSERT INTO notes (path, title, class, sensitivity, type, status, created, updated,
+         folder, basename, frontmatter, size, mtime)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ),
+    insertTag: db.prepare('INSERT INTO note_tags (path, tag) VALUES (?, ?)'),
+    insertLink: db.prepare('INSERT INTO links (source, target_raw, target_path, alias) VALUES (?,?,?,?)'),
+    insertFts: db.prepare('INSERT INTO notes_fts (path, title, body) VALUES (?,?,?)'),
+  };
+}
+
+/** Eine Notiz von der Platte lesen und in alle Tabellen eintragen. */
+function insertNoteFile(stmts, { vaultPath, policy }, relPath, raw) {
+  const note = parseNote(raw);
+  const st = statSync(join(vaultPath, relPath));
+  const folder = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : '';
+  const basename = relPath.slice(relPath.lastIndexOf('/') + 1).replace(/\.md$/i, '');
+  const noteClass = policy.classify(relPath);
+
+  stmts.insertNote.run(
+    relPath,
+    note.title,
+    noteClass,
+    policy.sensitivityOf(relPath),
+    typeof note.frontmatter.type === 'string' ? note.frontmatter.type : null,
+    typeof note.frontmatter.status === 'string' ? note.frontmatter.status : null,
+    note.dates.created,
+    note.dates.updated,
+    folder,
+    basename,
+    JSON.stringify(note.frontmatter),
+    st.size,
+    Math.floor(st.mtimeMs),
+  );
+
+  for (const tag of new Set([...note.tags, ...note.inlineTags])) stmts.insertTag.run(relPath, tag);
+  // Readwise nutzt [[…]] als Metadaten-Syntax ([[technologie]], [[favorite]], [[1]]),
+  // nicht als Verweis. Diese Links würden den Graphen mit Phantom-Knoten fluten.
+  if (noteClass !== 'readwise') {
+    for (const link of note.links) stmts.insertLink.run(relPath, link.target, null, link.alias);
+  }
+
+  stmts.insertFts.run(relPath, note.title ?? basename, note.body);
+}
+
 export function buildIndex({ vaultPath, dbPath, persist, policy = DEFAULT_POLICY, logger = console, onProgress }) {
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA journal_mode = WAL');
   db.exec(SCHEMA);
   db.exec('DELETE FROM notes; DELETE FROM note_tags; DELETE FROM links; DELETE FROM notes_fts;');
 
-  const insertNote = db.prepare(
-    `INSERT INTO notes (path, title, class, sensitivity, type, status, created, updated,
-       folder, basename, frontmatter, size, mtime)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-  );
-  const insertTag = db.prepare('INSERT INTO note_tags (path, tag) VALUES (?, ?)');
-  const insertLink = db.prepare('INSERT INTO links (source, target_raw, target_path, alias) VALUES (?,?,?,?)');
-  const insertFts = db.prepare('INSERT INTO notes_fts (path, title, body) VALUES (?,?,?)');
+  const stmts = prepareStatements(db);
 
   let count = 0;
   db.exec('BEGIN');
@@ -80,44 +120,14 @@ export function buildIndex({ vaultPath, dbPath, persist, policy = DEFAULT_POLICY
     if (policy.isExcluded(relPath)) continue;
 
     let raw;
-    const full = join(vaultPath, relPath);
     try {
-      raw = readFileSync(full, 'utf8');
+      raw = readFileSync(join(vaultPath, relPath), 'utf8');
     } catch (err) {
       logger.warn?.(`übersprungen (nicht lesbar): ${relPath} — ${err.message}`);
       continue;
     }
 
-    const note = parseNote(raw);
-    const st = statSync(full);
-    const folder = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : '';
-    const basename = relPath.slice(relPath.lastIndexOf('/') + 1).replace(/\.md$/i, '');
-    const noteClass = policy.classify(relPath);
-
-    insertNote.run(
-      relPath,
-      note.title,
-      noteClass,
-      policy.sensitivityOf(relPath),
-      typeof note.frontmatter.type === 'string' ? note.frontmatter.type : null,
-      typeof note.frontmatter.status === 'string' ? note.frontmatter.status : null,
-      note.dates.created,
-      note.dates.updated,
-      folder,
-      basename,
-      JSON.stringify(note.frontmatter),
-      st.size,
-      Math.floor(st.mtimeMs),
-    );
-
-    for (const tag of new Set([...note.tags, ...note.inlineTags])) insertTag.run(relPath, tag);
-    // Readwise nutzt [[…]] als Metadaten-Syntax ([[technologie]], [[favorite]], [[1]]),
-    // nicht als Verweis. Diese Links würden den Graphen mit Phantom-Knoten fluten.
-    if (noteClass !== 'readwise') {
-      for (const link of note.links) insertLink.run(relPath, link.target, null, link.alias);
-    }
-
-    insertFts.run(relPath, note.title ?? basename, note.body);
+    insertNoteFile(stmts, { vaultPath, policy }, relPath, raw);
     count += 1;
     if (onProgress && count % 500 === 0) onProgress(count);
   }
@@ -136,7 +146,7 @@ export function buildIndex({ vaultPath, dbPath, persist, policy = DEFAULT_POLICY
  * Mehrdeutige Basenamen (etwa SKILL.md in jedem Skill-Ordner) bleiben bewusst unaufgelöst,
  * statt willkürlich auf eine der Kandidatendateien zu zeigen.
  */
-function resolveLinks(db) {
+function resolveLinks(db, { source = null } = {}) {
   const byBasename = new Map();
   for (const row of db.prepare('SELECT path, basename FROM notes').all()) {
     const key = row.basename.toLowerCase();
@@ -147,7 +157,10 @@ function resolveLinks(db) {
 
   const update = db.prepare('UPDATE links SET target_path = ? WHERE rowid = ?');
   db.exec('BEGIN');
-  for (const link of db.prepare('SELECT rowid, target_raw FROM links').all()) {
+  const pending = source
+    ? db.prepare('SELECT rowid, target_raw FROM links WHERE source = ?').all(source)
+    : db.prepare('SELECT rowid, target_raw FROM links').all();
+  for (const link of pending) {
     const raw = link.target_raw;
     const asPath = raw.endsWith('.md') ? raw : `${raw}.md`;
     if (byPath.has(asPath)) {
@@ -170,7 +183,7 @@ function toMatchQuery(query) {
   return terms.map((t) => `"${t}"`).join(' AND ');
 }
 
-export function openIndex(dbOrPath, { vaultPath = process.env.VAULT_PATH ?? '/vault' } = {}) {
+export function openIndex(dbOrPath, { vaultPath = process.env.VAULT_PATH ?? '/vault', policy = DEFAULT_POLICY } = {}) {
   const db = typeof dbOrPath === 'string' ? new DatabaseSync(dbOrPath, { readOnly: false }) : dbOrPath;
 
   return {
@@ -287,6 +300,38 @@ export function openIndex(dbOrPath, { vaultPath = process.env.VAULT_PATH ?? '/va
       const resolved = db.prepare('SELECT COUNT(*) c FROM links WHERE target_path IS NOT NULL').get().c;
       const links = db.prepare('SELECT COUNT(*) c FROM links').get().c;
       return { total, byClass, distinctTags: tags, links, resolvedLinks: resolved };
+    },
+
+    /**
+     * Eine einzelne Notiz neu einlesen, etwa direkt nach einer Bearbeitung.
+     * Der Komplettaufbau läuft weiter periodisch; das hier hält nur Suche,
+     * Frontmatter und ausgehende Links der gerade geänderten Notiz aktuell.
+     * Backlinks anderer Notizen auf eine neu entstandene Datei löst erst der
+     * nächste Komplettaufbau auf.
+     */
+    refresh(path) {
+      const relPath = String(path ?? '');
+      let raw = null;
+      try {
+        raw = readFileSync(join(vaultPath, relPath), 'utf8');
+      } catch {
+        raw = null;
+      }
+      db.exec('BEGIN');
+      try {
+        for (const table of ['notes', 'note_tags', 'notes_fts']) {
+          db.prepare(`DELETE FROM ${table} WHERE path = ?`).run(relPath);
+        }
+        db.prepare('DELETE FROM links WHERE source = ?').run(relPath);
+        if (raw !== null && !policy.isExcluded(relPath)) {
+          insertNoteFile(prepareStatements(db), { vaultPath, policy }, relPath, raw);
+        }
+        db.exec('COMMIT');
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
+      resolveLinks(db, { source: relPath });
     },
 
     close() {
